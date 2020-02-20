@@ -9,7 +9,7 @@ from sklearn.preprocessing import LabelEncoder
 from physionet_generator import DataGenerator
 
 # get data from hdf file
-h5file =  h5py.File("physio.h5", 'r')
+h5file =  h5py.File("mit-bih-ds1.h5", 'r')
 # get a list of dataset names 
 dataset_list = list(h5file.keys())
 # get parameters 
@@ -24,7 +24,7 @@ ts = h5file[list(h5file.keys())[20]]['ecgdata'][:, 0]
 ts_extended = extend_ts(ts, length = sequence_length_max) # Extend it to the maximum length
 time = np.arange(0, len(ts_extended))/fs
 # Load the labels:
-label_df = pd.read_csv("REFERENCE-SMALL.csv", header = None, names = ['name', 'label'])
+label_df = pd.read_csv("mit-bih-ds1.h5.csv", header = None, names = ['name', 'label'])
 
 # Hot-encode the labels
 label_set = list(sorted(label_df.label.unique()))

@@ -2,12 +2,9 @@
 # -*- coding: utf-8 -*-
 """
 Physionet ECG classification
-
 @author: Andreas Werdich
-
 Batch generator class
 Modified from: https://stanford.edu/~shervine/blog/keras-how-to-generate-data-on-the-fly.html
-
 """
 #%% Imports
 
@@ -15,7 +12,7 @@ import numpy as np
 import keras
 
 from physionet_processing import (zero_filter, extend_ts, 
-                                  random_resample, spectrogram, norm_float)
+                                  random_resample, spectrogram, norm_float, interpolate)
 
 #%% Batch generator class
 
@@ -75,7 +72,7 @@ class DataGenerator(keras.utils.Sequence):
         # Generate data
         for i, ID in enumerate(list_IDs_temp):
             
-            data = extend_ts(self.h5file[ID]['ecgdata'][:, 0], self.sequence_length)
+            data = self.h5file[ID]['ecgdata'][:, 0]
             data = np.reshape(data, (1, len(data)))
         
             if self.augment:

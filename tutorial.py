@@ -1,13 +1,19 @@
+#######################################################################
+# tutorial.py - trenowanie modelu                                     #
+# Oryginalny skrypt awerdich/physionet - jedyna zmiana to usuniecie   #
+# funkcji extend_ts - kazdy przebieg ma stala d³ugosc.                #
+#######################################################################
+
 
 import numpy as np
-import matplotlib.pyplot as plt
-import h5py as h5py
 import pandas as pd
+import os
+import h5py
+from matplotlib import pyplot as plt
 
-# Tensorflow
-import tensorflow as tf
-#from tensorflow.python.client import device_lib
-#print(device_lib.list_local_devices())
+
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import LabelEncoder
 
 # Keras
 import keras
@@ -17,32 +23,37 @@ from keras import optimizers
 from keras import backend as K
 from keras import regularizers
 
+# Tensorflow
+import tensorflow as tf
 
-
-from physionet_processing import extend_ts, special_parameters
-from physionet_processing import spectrogram
-from sklearn.preprocessing import LabelEncoder
+# Custom imports
+from physionet_processing import (fetch_h5data, spectrogram, 
+                                  special_parameters, transformed_stats, interpolate)
 from physionet_generator import DataGenerator
-from physionet_processing import fetch_h5data
-# get data from hdf file
-h5file =  h5py.File("mit-bih.h5", 'r')
-# get a list of dataset names 
+
+# Data folder and hdf5 dataset file
+data_root = os.path.normpath('.')
+hd_file = os.path.join(data_root, 'mit-bih-ds1.h5')
+label_file = os.path.join(data_root, 'mit-bih-ds1.h5.csv')
+
+# Open hdf5 file
+h5file =  h5py.File(hd_file, 'r')
+
+# Get a list of dataset names 
 dataset_list = list(h5file.keys())
+
 # get parameters 
 sequence_lengths, sampling_rates, recording_times, baselines, gains = special_parameters(h5file)
 #get min and max values of parameters
 sequence_length_min, sequence_length_max = np.min(sequence_lengths), np.max(sequence_lengths)
 recording_time_min, recording_time_max = np.min(recording_times), np.max(recording_times)
-# based on this, we can set some parameters that we will use in the future
-fs = sampling_rates[0] # universal sampling rate
-sequence_length = sequence_length_max # will use the maximum sequence length
-ts = h5file[list(h5file.keys())[20]]['ecgdata'][:, 0]
-ts_extended = extend_ts(ts, length = sequence_length_max) # Extend it to the maximum length
-time = np.arange(0, len(ts_extended))/fs
-# Load the labels:
-label_df = pd.read_csv("mit-bih.h5.csv", header = None, names = ['name', 'label'])
 
-# Hot-encode the labels
+# Load the labels
+label_df = pd.read_csv(label_file, header = None, names = ['name', 'label'])
+# Filter the labels that are in the small demo set
+label_df = label_df[label_df['name'].isin(dataset_list)]
+
+# Encode labels to integer numbers
 label_set = list(sorted(label_df.label.unique()))
 encoder = LabelEncoder().fit(label_set)
 label_set_codings = encoder.transform(label_set)
@@ -50,9 +61,7 @@ label_df = label_df.assign(encoded = encoder.transform(label_df.label))
 
 print('Unique labels:', encoder.inverse_transform(label_set_codings))
 print('Unique codings:', label_set_codings)
-print('Dataset labels:\n', label_df.iloc[1:110,])
-
-from sklearn.model_selection import train_test_split
+print('Dataset labels:\n', label_df.iloc[100:110,])
 
 # Split the IDs in training and validation set
 test_split = 0.33
@@ -68,15 +77,16 @@ partition = {'train': list(label_df.iloc[id_train,].name),
 
 labels = dict(zip(label_df.name, label_df.encoded))
 
-# Parameters needed for the DataGenerator class
+# Parameters needed for the batch generator
+
 # Maximum sequence length
-max_length = sequence_length
+max_length = sequence_length_max
 
 # Output dimensions
-sequence_length = sequence_length_max # Use the maximum sequence length in the data set
-spectrogram_nperseg = 64 # Spectrogram hanning window width
-spectrogram_noverlap = 32 # Spectrogram hanning window overlap
-n_classes = len(label_df.label.unique()) # Number of classes
+sequence_length = max_length
+spectrogram_nperseg = 64 # Spectrogram window
+spectrogram_noverlap = 32 # Spectrogram overlap
+n_classes = len(label_df.label.unique())
 batch_size = 32
 
 # calculate image dimensions
@@ -109,28 +119,31 @@ print('X shape:', X.shape)
 print('y shape:', y.shape)
 print('X type:', np.dtype(X[0,0,0,0]))
 
+
+
 def imshow_batch(X, y, batch_idx):
     
     batch_labels = ['Class label:' + str(np.argmax(y[idx,])) for idx in batch_idx]
+    #batch_labels = ['Class label:' + str(np.argmax(y[idx,])[0]) for idx in batch_idx]
 
-    fig, ax = plt.subplots(1, len(batch_idx), figsize = (17, 1))
+    fig, ax = plt.subplots(1, len(batch_idx), figsize = (15, 3))
 
     for i, idx in enumerate(batch_idx):
     
         ax[i].imshow(X[idx, :, :, 0].transpose(), cmap = 'jet', aspect = 'auto')
         ax[i].grid(False)
-        ax[i].axis('off')
+        #ax[i].axis('off')
         ax[i].invert_yaxis()
-        ax[i].set_title(batch_labels[i], fontsize = 10)
+        ax[i].set(title = batch_labels[i])
     
     plt.show()
         
     return fig
 
-batch_idx = np.random.randint(0, batch_size, size = 10) 
+#batch_idx = [0, 1, 2, 3, 4]
 #fig = imshow_batch(X, y, batch_idx)
-#fig.savefig('physionet_Batch.png', bbox_inches = 'tight', dpi = 150)
 #plt.show()
+
 # Convolutional blocks
 def conv2d_block(model, depth, layer_filters, filters_growth, 
                  strides_start, strides_end, input_shape, first_layer = False):
@@ -176,11 +189,12 @@ def conv2d_block(model, depth, layer_filters, filters_growth,
     
     return model
 
-# Input shape
-n_channels = 1 # Number of color channgels
-input_shape = (*dim, n_channels) # input shape for first layer
+def MeanOverTime():
+    lam_layer = layers.Lambda(lambda x: K.mean(x, axis=1), output_shape=lambda s: (1, s[2]))
+    return lam_layer
 
-# Hyperparameters
+# Define the model
+# Model parameters
 filters_start = 32 # Number of convolutional filters
 layer_filters = filters_start # Start with these filters
 filters_growth = 32 # Filter increase after each convBlock
@@ -188,19 +202,65 @@ strides_start = (1, 1) # Strides at the beginning of each convBlock
 strides_end = (2, 2) # Strides at the end of each convBlock
 depth = 4 # Number of convolutional layers in each convBlock
 n_blocks = 6 # Number of ConBlocks
+n_channels = 1 # Number of color channgels
+input_shape = (*dim, n_channels) # input shape for first layer
+
+
+model = Sequential()
+
+for block in range(n_blocks):
+
+    # Provide input only for the first layer
+    if block == 0:
+        provide_input = True
+    else:
+        provide_input = False
+    
+    model = conv2d_block(model, depth,
+                         layer_filters,
+                         filters_growth,
+                         strides_start, strides_end,
+                         input_shape,
+                         first_layer = provide_input)
+    
+    # Increase the number of filters after each block
+    layer_filters += filters_growth
 
 
 
-model = keras.models.load_model('model.h5', custom_objects={'tf': tf})
+# Remove the frequency dimension, so that the output can feed into LSTM
+# Reshape to (batch, time steps, filters)
+model.add(layers.Reshape((-1, 224)))
+model.add(layers.core.Masking(mask_value = 0.0))
+model.add(MeanOverTime())
 
-#history = model.fit_generator(generator = train_generator,
-#                              steps_per_epoch = 50,
-#                              epochs = 10,
-#                              validation_data = val_generator,
-#                              validation_steps = 50)
-#
-#model.save("model.h5")
+# Alternative: Replace averaging by LSTM
+
+# Insert masking layer to ignore zeros
+#model.add(layers.core.Masking(mask_value = 0.0))
+
+# Add LSTM layer with 3 neurons
+#model.add(layers.LSTM(200))
+#model.add(layers.Flatten())
+
+# And a fully connected layer for the output
+model.add(layers.Dense(20, activation='sigmoid', kernel_regularizer = regularizers.l2(0.1)))
+
+
+model.summary()
+
+# Compile the model and run a batch through the network
+model.compile(loss='categorical_crossentropy',
+              optimizer=optimizers.Adam(lr=0.001),
+              metrics=['acc'])
+
+history = model.fit_generator(generator = train_generator,
+                              steps_per_epoch = 50,
+                              epochs = 400,
+                              validation_data = val_generator,
+                              validation_steps = 50)
 
 df = pd.DataFrame(model.history.history)
 df.head()
-df.to_csv('history.csv')
+df.to_csv('history_augmented.csv')
+model.save('model_augmented.h5')

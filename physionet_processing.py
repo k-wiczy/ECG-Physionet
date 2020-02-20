@@ -22,7 +22,6 @@ def special_parameters(h5file):
 
     # Get the list of dataset names
     dataset_list = list(h5file.keys())
-
     # Find sampling frequencies, sequence lengths and total recording times
     sequence_length = []
     sampling_rates = []
@@ -36,8 +35,17 @@ def special_parameters(h5file):
         baselines.append(h5file[fid]['ecgdata'].attrs['baseline'][0])
         gains.append(h5file[fid]['ecgdata'].attrs['gain'][0])
         
-    return (list(set(sequence_length)), list(set(sampling_rates)), 
+    return (list(sequence_length), list(set(sampling_rates)), 
             list(set(recording_times)), list(set(baselines)), list(set(gains)))
+  
+def interpolate(ts, iterations):
+    tsignal = np.zeros(iterations*len(ts))
+    offset = 0
+    for n in range(0, iterations):
+        for k in range(0,len(ts)):
+            tsignal[k+(n*len(ts))] = ts[k] + offset
+        offset = ts[-1] + offset;
+    return tsignal
 
 def extend_ts(ts, length):
     extended = np.zeros(length)
@@ -54,7 +62,6 @@ def fetch_h5data(h5file, index_list, sequence_length):
     
     data = []
     for dset in load_list:
-        
         data.append(extend_ts(h5file[dset]['ecgdata'][:, 0], sequence_length))
 
     return np.vstack(data)

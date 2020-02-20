@@ -1,73 +1,91 @@
-import tensorflow as tf
+####################################################################################
+# evaluate.py - Skrypt do testowania modelu po uczeniu.                            #
+# mit-bih-ds1.h5 - Dataset danych testujacych (MIT-BIH)                            #    
+# mit-bih-ds1.h5.csv - plik csv z klasyfikacja danych                              #
+# model_augmented.h5 - dane modelu, ktory jest testowany                           #
+# Autor : Jakub Wiczynski - modyfikacja kodu physionet ( Andreas Werdich)          #
+# Modyfikacja polegala na dostosowaniu skryptu do dzialania na krotszych           #
+# przebiegach, skupionych wokol zespolu QRS z zadanym marginesem i dostosowaniem   #
+# skryptu do datasetu MIT-BIH                                                      #
+####################################################################################   
+
+# Import bibliotek i funkcji                     
 import numpy as np
 import h5py as h5py
 import pandas as pd
-
-from physionet_processing import extend_ts, special_parameters, spectrogram
+import tensorflow as tf
+import keras
+from physionet_processing import special_parameters
+from physionet_processing import spectrogram
 from sklearn.preprocessing import LabelEncoder
 from physionet_generator import DataGenerator
 
-# get data from hdf file
-h5file =  h5py.File("physio.h5", 'r')
-# get a list of dataset names 
+
+###########################################################
+# Pobranie danych testujacych i klasyfikatorow
+###########################################################
+
+# Wczytanie danych datasetu z pliku hdf
+h5file =  h5py.File("mit-bih-ds1.h5", 'r')
 dataset_list = list(h5file.keys())
-# get parameters 
+
+# Parametry datasetow
 sequence_lengths, sampling_rates, recording_times, baselines, gains = special_parameters(h5file)
-#get min and max values of parameters
+
+# Minimalne i maksymalne parametry
 sequence_length_min, sequence_length_max = np.min(sequence_lengths), np.max(sequence_lengths)
 recording_time_min, recording_time_max = np.min(recording_times), np.max(recording_times)
-# based on this, we can set some parameters that we will use in the future
-fs = sampling_rates[0] # universal sampling rate
-sequence_length = sequence_length_max # will use the maximum sequence length
-ts = h5file[list(h5file.keys())[20]]['ecgdata'][:, 0]
-ts_extended = extend_ts(ts, length = sequence_length_max) # Extend it to the maximum length
-time = np.arange(0, len(ts_extended))/fs
-# Load the labels:
-label_df = pd.read_csv("REFERENCE-SMALL.csv", header = None, names = ['name', 'label'])
 
-# Hot-encode the labels
+# Czestotliwosc probkowania, dlugosc przebiegu czasowego, skala czasu
+fs = sampling_rates[0]
+sequence_length = sequence_length_max
+ts = h5file[list(h5file.keys())[20]]['ecgdata'][:, 0]
+time = np.arange(0, len(ts))/fs
+
+# Wczytanie klasyfikacji poszczegolnych przebiegow
+label_df = pd.read_csv("mit-bih-ds1.h5.csv", header = None, names = ['name', 'label'])
 label_set = list(sorted(label_df.label.unique()))
 encoder = LabelEncoder().fit(label_set)
 label_set_codings = encoder.transform(label_set)
 label_df = label_df.assign(encoded = encoder.transform(label_df.label))
 
-print('Unique labels:', encoder.inverse_transform(label_set_codings))
-print('Unique codings:', label_set_codings)
-print('Dataset labels:\n', label_df.iloc[1:110,])
+# Wyswietlenie klasyfikatorow
+print(label_set)
 
-from sklearn.model_selection import train_test_split
+###########################################################
+# Przypisanie poszczegolnych przebiegow do poszczegolnej klasyfikacji
+###########################################################
 
-# Split the IDs in training and validation set
-test_split = 0.33
-idx = np.arange(label_df.shape[0])
-id_train, id_val, _, _ = train_test_split(idx, idx, 
-                                         test_size = test_split,
-                                         shuffle = True,
-                                         random_state = 123)
+label_list = list()
+for i in np.arange(0, label_df.shape[0]):
+    if label_df.iloc[i].label == 'N':
+        label_list.append(label_df.iloc[i].name)
+    
+partition = { 'N' : list(label_df.iloc[label_list,].name) }
+labels_dict = dict(zip(label_df.name, label_df.encoded))
 
-# Store the ids and labels in dictionaries
-partition = {'train': list(label_df.iloc[id_train,].name), 
-             'validation': list(label_df.iloc[id_val,].name)}
+###########################################################
+# Generowanie danych testujacych model - klasa DataGenerator
+###########################################################
 
-labels = dict(zip(label_df.name, label_df.encoded))
-
-# Parameters needed for the DataGenerator class
-# Maximum sequence length
+# Maksymalna dlugosc przebiegu
 max_length = sequence_length
 
-# Output dimensions
-sequence_length = sequence_length_max # Use the maximum sequence length in the data set
-spectrogram_nperseg = 64 # Spectrogram hanning window width
-spectrogram_noverlap = 32 # Spectrogram hanning window overlap
-n_classes = len(label_df.label.unique()) # Number of classes
+# Parametry spektrogramu
+sequence_length = sequence_length_max 
+spectrogram_nperseg = 64
+spectrogram_noverlap = 32
+n_classes = len(label_df.label.unique())
 batch_size = 32
 
-# Use one spectrogram to detemine the image dimensions
-Sx_log = spectrogram(np.expand_dims(ts_extended, axis = 0),
+# Wymiary obrazu okreslone za pomoca wymiarow spektrogramu
+Sx_log = spectrogram(np.expand_dims(ts, axis = 0),
                      nperseg = spectrogram_nperseg,
                      noverlap = spectrogram_noverlap,
                      log_spectrogram = True)[2]
 dim = Sx_log[0].shape
+
+# Inicjalizacja parametrow klasy DataGenerator
 
 params = {'batch_size': batch_size,
           'dim': dim,
@@ -78,17 +96,22 @@ params = {'batch_size': batch_size,
           'n_classes': n_classes,
           'shuffle': True}
 
-val_generator = DataGenerator(h5file, partition['validation'], labels, augment = False, **params)
 
-for i, batch in enumerate(val_generator):
-    if i == 1:
-        break
+##############################################################
+# Testowanie danych o poszczegolnych klasyfikacjach na modelu
+##############################################################
 
-X = batch[0]
-y = batch[1]
+for label_idx in np.arange(0, 2):
+    val_generator = DataGenerator(h5file, partition['N'], labels_dict, augment = False, **params)
+    for i, batch in enumerate(val_generator):
+        if i == 1:
+            break
+    X = batch[0]
+    y = batch[1]
+    model = keras.models.load_model('model_augmented.h5', custom_objects={'tf': tf})
+    score = model.evaluate(X,y,batch_size = 32)
+    print(score)
 
-model = tf.keras.models.load_model("model.h5")
-model.evaluate(X,y,batch_size = 32)
-
-
-
+    
+    
+    
